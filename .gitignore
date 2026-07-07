@@ -1,4 +1,5 @@
 .venv
 .env
-prewiu.txt
+doc/prewiu.txt
 usersGamzi.db
+doc

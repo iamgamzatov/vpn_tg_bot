@@ -4,6 +4,7 @@ import uuid
 import time
 from dotenv import load_dotenv
 
+
 load_dotenv()
 
 BASE_URL = 'https://gamzivpn-client.mooo.com:39933/y6vfKjjnGmBIbxBUf7'
@@ -16,56 +17,129 @@ HEADERS = {
 }
 
 
-async def add_new_vpn_client(tg_id: int, username: str) -> str | None:
-    url = f"{BASE_URL}/panel/api/clients/add"
+async def add_new_vpn_client(tg_id: int, db_id: int, days: int = 3) -> str | None:
+    client_email = f'tg_{tg_id}'
 
-    client_uuid = str(uuid.uuid4())
-    sub_id = str(uuid.uuid4()).replace("-", "")[:16]
-
-    # Расчет 3-х дней триала в миллисекундах
-    # Вместо ровных 3 дней добавим небольшой хвостик в 4 часа для компенсации часовых поясов
-    three_days_in_ms = 3 * 24 * 60 * 60 * 1000
+    current_time_ms = int(time.time() * 1000)
+    days_in_ms = days * 24 * 60 * 60 * 1000
     buffer_hours_in_ms = 4 * 60 * 60 * 1000  # запас 4 часа
-
-    expiry_timestamp = int((time.time() * 1000) + three_days_in_ms + buffer_hours_in_ms)
-
-    # 🎯 Идеальная структура один-в-один как на твоем скриншоте изображение_5.png
-    payload = {
-        "client": {
-            "id": client_uuid,
-            "flow": "xtls-rprx-vision",
-            "email": username,
-            "limitIp": 1,  # Ограничение: 1 устройство (число)
-            "totalGB": 0,  # Безлимитный трафик (число)
-            "expiryTime": expiry_timestamp,  # Отключение через 3 дня (число)
-            "enable": True,
-            "tgId": int(tg_id),  # Передаем как число, как в твоем инспекторе
-            "subId": sub_id,
-            "comment": "",
-            "group": "",
-            "reset": 0,
-            "security": "auto"
-        },
-        "inboundIds": [1]  # Привязка к Швеции идет наравне с client
-    }
 
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
-            print(f"📡 Отправляем идеально точный JSON для {username}...")
-            async with session.post(url, json=payload) as response:
-                print(f"📡 Статус ответа панели: {response.status}")
+            # -----------------------------------------------------------------
+            # ШАГ 1: Запрашиваем конкретного клиента по Email через ОФИЦИАЛЬНЫЙ API
+            # -----------------------------------------------------------------
+            get_client_url = f"{BASE_URL}/panel/api/clients/get/{client_email}"
+            print(f"📡 Проверяем клиента {client_email} через официальный API...")
 
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("success") is True:
-                        print("🎉 Успех! Панель создала клиента.")
-                        return f"{SUB_BASE_URL}/{sub_id}"
-                    else:
-                        print(f"❌ Панель вернула ошибку: {data.get('msg')}")
-                        return None
+            existing_client = None
+            async with session.get(get_client_url) as get_response:
+                if get_response.status == 200:
+                    get_data = await get_response.json()
+                    # Если клиент найден, панель возвращает его в поле "obj"
+                    if get_data.get("success") is True and get_data.get("obj"):
+                        existing_client = get_data["obj"]
                 else:
-                    print(f"❌ Ошибка сервера: {response.status}")
-                    return None
+                    print(f"ℹ️ Клиент не найден (статус {get_response.status}), будем создавать нового.")
+
+            # -----------------------------------------------------------------
+            # ШАГ 2: Если клиент СУЩЕСТВУЕТ -> ОБНОВЛЯЕМ (Продлеваем подписку)
+            # -----------------------------------------------------------------
+            if existing_client:
+                print(f"ℹ️ Клиент {client_email} существует. Переходим к продлению подписки...")
+
+                client_uuid = existing_client.get("id")
+                sub_id = existing_client.get("subId")
+                if not sub_id or sub_id == "none":
+                    # Генерируем уникальный ID, если его нет
+                    sub_id = str(uuid.uuid4())[:8]
+                old_expiry = existing_client.get("expiryTime", 0)
+
+                # Умный расчет времени окончания
+                # Умный расчет времени окончания (твою логику не трогаем, она супер)
+                if old_expiry > current_time_ms:
+                    expiry_timestamp = old_expiry + days_in_ms
+                else:
+                    expiry_timestamp = current_time_ms + days_in_ms + buffer_hours_in_ms
+
+                # ✅ ПРАВИЛЬНЫЙ PAYLOAD: все поля идут на верхнем уровне, без оберток!
+                payload = {
+                    "id": client_uuid,
+                    "flow": "xtls-rprx-vision",
+                    "email": client_email,
+                    "limitIp": 2,
+                    "totalGB": 0,
+                    "expiryTime": int(expiry_timestamp),  # Защита от точек в минутах
+                    "enable": True,
+                    "tgId": int(tg_id),
+                    "subId": sub_id,
+                    "comment": "",
+                    "group": "",
+                    "reset": 0,
+                    "security": "auto"
+                }
+
+                # URL строго по твоей документации
+                update_url = f"{BASE_URL}/panel/api/clients/update/{client_email}"
+                print(f"📡 Отправляем запрос на обновление клиента {client_email}...")
+
+                async with session.post(update_url, json=payload) as put_response:
+                    if put_response.status == 200:
+                        data = await put_response.json()
+                        if data.get("success") is True:
+                            print(f"🎉 Успех! Официальный API обновил подписку для {client_email}.")
+                            return f"{SUB_BASE_URL}/{sub_id}"
+                        else:
+                            print(f"❌ Ошибка обновления: {data.get('msg')}")
+                            return None
+                    else:
+                        print(f"❌ Сервер ответил статусом: {put_response.status}")
+                        return None
+
+
+            # -----------------------------------------------------------------
+            # ШАГ 3: Если клиента НЕТ -> СОЗДАЕМ НОВОГО
+            # -----------------------------------------------------------------
+            else:
+                print(f"ℹ️ Клиента {client_email} нет в панели. Создаем с нуля...")
+
+                client_uuid = str(uuid.uuid4())
+                sub_id = str(uuid.uuid4()).replace("-", "")[:16]
+                expiry_timestamp = int(current_time_ms + days_in_ms + buffer_hours_in_ms)
+
+                payload = {
+                    "client": {
+                        "id": client_uuid,
+                        "flow": "xtls-rprx-vision",
+                        "email": client_email,
+                        "limitIp": 2,
+                        "totalGB": 0,
+                        "expiryTime": expiry_timestamp,
+                        "enable": True,
+                        "tgId": int(tg_id),
+                        "subId": sub_id,
+                        "comment": "",
+                        "group": "",
+                        "reset": 0,
+                        "security": "auto"
+                    },
+                    "inboundIds": [1]
+                }
+
+                add_url = f"{BASE_URL}/panel/api/clients/add"
+                async with session.post(add_url, json=payload) as post_response:
+                    if post_response.status == 200:
+                        data = await post_response.json()
+                        if data.get("success") is True:
+                            print("🎉 Успех! Официальный API создал нового клиента.")
+                            return f"{SUB_BASE_URL}/{sub_id}"
+                        else:
+                            print(f"❌ Ошибка добавления: {data.get('msg')}")
+                            return None
+                    else:
+                        print(f"❌ Сервер ответил статусом: {post_response.status}")
+                        return None
+
         except Exception as e:
-            print(f"💥 Критическая ошибка сети: {e}")
+            print(f"💥 Критическая ошибка в add_new_vpn_client: {e}")
             return None

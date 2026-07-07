@@ -3,212 +3,373 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import (
     Message,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    FSInputFile
+    CallbackQuery
 )
-from forms.user import Form
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 import aiosqlite
+
 from services.xui_api import add_new_vpn_client
-import os
+from os import getenv
+from dotenv import load_dotenv
+load_dotenv()
+
+PROMO_CODE = 'sweden'
+ADMIN_USERNAME = "iamgamzatov"
 
 router = Router()
 
-# ---
+ADMIN_TG_ID = int(getenv('MY_ID_TG', '0'))
 
+class OrderSubscription(StatesGroup):
+    wait_for_receipt = State()
 
+# ----------------------------------------------------------
 DB_GamziVPN = 'usersGamzi.db'
 
 async def init_bd():
     async with aiosqlite.connect(DB_GamziVPN) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                username TEXT
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id INTEGER UNIQUE,
+                username TEXT,
+                used_promo INTEGER DEFAULT 0
             )
         """)
 
         await db.commit()
+# ---------------------------------------------------------
 
-# ---
-
-async def add_user(user_id, username):
+async def add_user(user_id: int, username: str):
     async with aiosqlite.connect(DB_GamziVPN) as db:
         await db.execute(
-            "INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO users (tg_id, username) VALUES (?, ?)",
             (user_id, username)
         )
         await db.commit()
 
-
-async def get_users():
+async def get_users() -> list:
     async with aiosqlite.connect(DB_GamziVPN) as db:
-        cursor = await db.execute('SELECT id, username FROM users')
+        cursor = await db.execute('SELECT id, tg_id, username FROM users')
         result = await cursor.fetchall()
-        return result
+        return list(result)
+
+async def get_user_internal_id(user_id: int) -> int | None:
+    async with aiosqlite.connect(DB_GamziVPN) as db:
+        cursor = await db.execute('SELECT id FROM users WHERE tg_id = ?', (user_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+async def check_if_promo_used(tg_id: int) -> bool:
+    """
+    Проверяет, активировал ли пользователь промокод ранее.
+    Возвращает True, если использовал (1), и False, если нет (0) или если юзера нет в базе.
+    """
+    async with aiosqlite.connect(DB_GamziVPN) as db:
+        # Получаем значение колонки used_promo для конкретного tg_id
+        async with db.execute("SELECT used_promo FROM users WHERE tg_id = ?", (tg_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                # row[0] вернет либо 1, либо 0.
+                # bool(1) станет True, bool(0) станет False.
+                return bool(row[0])
+            return False  # Если пользователя почему-то вообще нет в базе данных
+
+
+async def mark_promo_as_used(tg_id: int) -> None:
+    """
+    Помечает в базе данных, что пользователь успешно использовал промокод.
+    """
+    async with aiosqlite.connect(DB_GamziVPN) as db:
+        # Тот самый прикольный UPDATE, который ставит флаг в 1
+        await db.execute("UPDATE users SET used_promo = 1 WHERE tg_id = ?", (tg_id,))
+        # КРИТИЧЕСКИ ВАЖНО для UPDATE/INSERT запросов делать commit, чтобы изменения сохранились в файл!
+        await db.commit()
+
+
 
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# def get_main_inline_keyboard():
-#     keyboard = InlineKeyboardMarkup(
-#         inline_keyboard=[
-#             [InlineKeyboardButton(text='Открыть сайт', url='http://my-first-flask-env.eba-npgrppep.eu-north-1.elasticbeanstalk.com')],
-#             [InlineKeyboardButton(text="Подробнее", callback_data='info_more')],
-#
-#         ]
-#
-#     )
-#     return keyboard
-#
-# def get_main_reply_keyboard():
-#     keyboard = ReplyKeyboardMarkup(
-#         keyboard=[
-#             [KeyboardButton(text='О боте')],
-#             [KeyboardButton(text='Старт'), KeyboardButton(text='Помощь')]
-#         ],
-#         resize_keyboard=True
-#     )
-#     return keyboard
-#
-#
-# @router.callback_query(lambda c: c.data == 'info_more')
-# async def proccess_more_info(callback):
-#     await callback.message.answer('Вот более подробная информация')
-#     await callback.answer()
+PHOTO_ID = 'AgACAgIAAxkDAAMHakvzeCSwUP7KFBDJcXns8-yVOD4AAiMkaxtuvWBKkeunOO3NE7QBAAMCAAN5AAM8BA'
 
-# @router.message(Command('cancel'))
-# async def cancel_form(message: Message, state: FSMContext ):
-#     await state.clear()
-#     await message.answer('Анкета отклонена!')
-
-# @router.message(Command('start'))
-# @router.message(F.text.lower() == 'старт')
-# async def start(message: Message, state: FSMContext ):
-#     await message.answer("Привет! Я простой бот для тебя\n\nВведите имя:")
-#     await state.set_state(Form.name)
-
-# @router.message(Form.name, F.text)
-# async def proccess_name(message: Message, state: FSMContext ):
-#     await state.update_data(name=message.text)
-#     await message.answer("Хорошая работа!\nВведите возраст:")
-#     await state.set_state(Form.age)
-#
-# @router.message(Form.age, F.text)
-# async def proccess_age(message: Message, state: FSMContext ):
-#     if not message.text.isdigit():
-#         await message.answer('Возраст должен быть числом!')
-#         return
-#     if int(message.text) < 1 or int(message.text) > 100:
-#         await message.answer('Укажите верные данные!')
-#         return
-#     await state.update_data(age=message.text)
-#     await message.answer("Вы молодец!\nВведите email:")
-#     await state.set_state(Form.email)
-#
-# @router.message(Form.email, F.text)
-# async def proccess_age(message: Message, state: FSMContext ):
-#     email_text = message.text
-#     if "@" not in email_text or "." not in email_text:
-#         await message.answer('Email некорректный!')
-#         return
-#     await state.update_data(email=email_text)
-#     data = await state.get_data()
-#     name = data['name']
-#     age = data['age']
-#     email = data['email']
-#     await message.answer(f"Анкета готова!\nИмя: {name}\nВозраст: {age}\nПочта: {email}")
-#     await state.clear()
 @router.message(Command('start'))
 async def start(message: Message):
-    PHOTO_ID = 'AgACAgIAAxkDAAMHakvzeCSwUP7KFBDJcXns8-yVOD4AAiMkaxtuvWBKkeunOO3NE7QBAAMCAAN5AAM8BA'
+    user = message.from_user
+    if not user:
+        return
 
     await message.answer_photo(
         photo=PHOTO_ID,
         caption=(
-            f"Приветствую, {message.from_user.first_name}! 👋\n\n"
+            f"Приветствую, {user.first_name}! 👋\n\n"
             "Это твой личный бот <b>Gamzi VPN</b>! 😎\n"
             "<b>YouTube, TikTok, Telegram и тд</b> - без ограничений!\n\n"
         ),
         parse_mode='HTML'
     )
 
-    await add_user(message.from_user.id, message.from_user.full_name)
-    promo = 'Введите <b>промокод</b>.\n\nПолучите безграничный VPN! на <b>3 дня!</b>'
-    await message.answer(promo, parse_mode='HTML')
-# @router.message(Command('start'))
-# async def start(message: Message):
-#     current_dir = os.path.dirname(__file__)
-#     photo_path = os.path.join(current_dir, "fon.jpg")
-#     photo = FSInputFile(photo_path)
-#
-#     # 1. Сохраняем отправленное сообщение в переменную msg
-#     msg = await message.answer_photo(
-#         photo=photo,
-#         caption=(
-#             f"Приветствую, {message.from_user.first_name}! 👋\n\n"
-#             "Это твой личный бот <b>Gamzi VPN</b>! 😎\n"
-#             "<b>YouTube, TikTok, Telegram и тд</b> - без ограничений!.\n\n"
-#             "Напиши /help, чтобы посмотреть доступные команды."
-#         ),
-#         parse_mode='HTML'
-#     )
-#
-#     # 🎯 ВОТ ТА САМАЯ СТРОЧКА: она выведет новый ID в терминал/консоль
-#     # msg.photo[-1] выбирает самое лучшее качество фотографии
-#     print(f"\n🔥 НОВЫЙ PHOTO_ID ДЛЯ ЭТОГО БОТА:\n{msg.photo[-1].file_id}\n")
-#
-#     await add_user(message.from_user.id, message.from_user.full_name)
-#     promo = 'Введите <b>промокод</b>.\n\nПолучите безграничный VPN! на <b>3 дня!</b>'
-#     await message.answer(promo, parse_mode='HTML')
+    user_name = user.username or user.full_name
+    await add_user(user.id, user_name)
+
+
+    start_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+
+        [InlineKeyboardButton(text="💳 Оформить подписку", callback_data="buy_subscription")]
+
+    ])
+
+    promo = 'Введите <b>промокод</b> и получите безграничный VPN на <b>3 дня!</b>\n\nИли нажмите кнопку ниже, чтобы приобрести полную подписку:'
+    await message.answer(promo, parse_mode='HTML', reply_markup=start_keyboard)
+
+
+@router.callback_query(F.data == 'buy_subscription')
+async def process_buy_subscription(callback: CallbackQuery):
+    if not callback.message or not isinstance(callback.message, Message):
+        return
+
+    keyboard_tariffs = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔥 1 месяц — 100 руб", callback_data="tariff_1_month")]
+    ])
+    await callback.message.answer("📅 Выберите желаемый срок подписки:", reply_markup=keyboard_tariffs)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "tariff_1_month")
+async def process_tariff(callback: CallbackQuery):
+    user = callback.from_user
+    if not user or not callback.message or not isinstance(callback.message, Message):
+        return
+
+    db_id = await get_user_internal_id(user.id)
+    display_id = db_id if db_id is not None else "Не определен"
+
+    text = (
+        "💳 <b>Реквизиты для оплаты (1 месяц — 100 руб)</b>\n\n"
+        "Переведите <b>100 рублей</b> по СБП на карту:\n"
+        "🔹 <b>Банк:</b> Тбанк\n"
+        "🔹 <b>Номер:</b> <code>+79607936222</code>\n"
+        "📌 <b>Что делать после перевода:</b>\n"
+        "Сохраните чек из банковского приложения, вернитесь сюда и нажмите кнопку ниже <b>'✅ Я оплатил(а), отправить чек'</b>.\n\n"
+        f"Ваш номер подписки: <code>Подписка №{display_id}</code>"
+    )
+
+    # Кнопка, которая переведет бота в режим ожидания чека
+    keyboard_pay = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Я оплатил(а), отправить чек", callback_data="paid_send_receipt")]
+    ])
+
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard_pay)
+    await callback.answer()
+
+
+# Сценарий Оплаты. Шаг 3: Включение режима ожидания чека (Вход в FSM)
+@router.callback_query(F.data == "paid_send_receipt")
+async def paid_send_receipt_handler(callback: CallbackQuery, state: FSMContext):
+    if not callback.message or not isinstance(callback.message, Message):
+        return
+    # Включаем для этого пользователя состояние ожидания чека
+    await state.set_state(OrderSubscription.wait_for_receipt)
+    await callback.message.answer(
+        "Отлично! Отправьте скриншот чека (или текстовое сообщение с деталями платежа) "
+        "<b>прямо сюда, в этот чат</b>. Бот перешлет его администратору. 📥",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# Сценарий Оплаты. Шаг 4 и 5: Прием чека, выход из FSM и отправка админу
+@router.message(OrderSubscription.wait_for_receipt)
+async def process_receipt(message: Message, state: FSMContext):
+    user = message.from_user
+    bot = message.bot
+    if not user or not bot:
+        return
+
+    db_id = await get_user_internal_id(user.id)
+
+    # Кнопки для управления заявкой (в callback_data зашиваем tg_id покупателя)
+    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить (30 дней)", callback_data=f"adm_app:{user.id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_dec:{user.id}")
+        ]
+    ])
+
+    admin_text = (
+        f"💰 <b>Поступила новая заявка на подписку!</b>\n\n"
+        f"👤 <b>Пользователь:</b> {user.full_name} (@{user.username})\n"
+        f"🆔 <b>Telegram ID:</b> {user.id}\n"
+        f"📦 <b>В базе бота:</b> Подписка №{db_id}\n\n"
+        f"👇 Чек или сообщение пользователя прикреплено ниже:"
+    )
+
+    try:
+        # Отправляем админу текстовую карточку-уведомление
+        await bot.send_message(chat_id=ADMIN_TG_ID, text=admin_text, parse_mode="HTML")
+        # Копируем сам чек (фото/текст/документ) админу вместе с кнопками действий
+        await message.copy_to(chat_id=ADMIN_TG_ID, reply_markup=admin_keyboard)
+    except Exception as e:
+        print(f"💥 Ошибка отправки уведомления админу: {e}")
+
+    # 🚀 СБРАСЫВАЕМ СОСТОЯНИЕ (выходим из FSM), чтобы пользователь мог снова пользоваться ботом
+    await state.clear()
+    await message.answer(
+        "🎉 <b>Ваш чек успешно отправлен на проверку администратору!</b>\n\n"
+        "После подтверждения платежа бот мгновенно пришлет вам ключ доступа. "
+        "Обычно проверка занимает от 5 до 15 минут. Ожидайте! ⏳",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_app:"))
+async def admin_approve_sub(callback: CallbackQuery):
+    bot = callback.bot
+    if not callback.data or not callback.message or not isinstance(callback.message, Message) or not bot:
+        return
+    # Извлекаем Telegram ID пользователя из даты кнопки
+    user_tg_id = int(callback.data.split(":")[1])
+    db_id = await get_user_internal_id(user_tg_id)
+
+    if db_id is None:
+        await callback.answer("🛑 Ошибка: Пользователь не найден в локальной БД!")
+        return
+
+    # Сразу убираем inline-кнопки у админа, чтобы исключить повторные нажатия
+    await callback.message.edit_reply_markup(reply_markup=None)
+    status_msg = await callback.message.reply("⏳ Связываюсь с XUI-панелью, создаю ключ на 30 дней...")
+
+    # Обращаемся к API панели, передаем days=30
+    sub_link = await add_new_vpn_client(tg_id=user_tg_id, db_id=int(db_id), days=30)
+
+    if sub_link:
+        # Уведомляем тебя в чате
+        await status_msg.edit_text(f"🟢 Подписка №{db_id} успешно активирована на 30 дней!")
+
+        # Формируем и отправляем заветное сообщение пользователю
+        user_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🤖 Скачать для Android",
+                                     url="https://play.google.com/store/apps/details?id=com.happproxy&hl=ru&pli=1"),
+                InlineKeyboardButton(text="🍏 Скачать для iOS",
+                                     url="https://apps.apple.com/us/app/happ-proxy-utility/id6504287215?l=ru")
+            ]
+        ])
+
+        instruction_text = (
+            "🥳 <b>Ура! Ваша оплата подтверждена! Подписка на 1 месяц успешно активирована!</b> 🎉\n\n"
+            "ℹ️ <b>Инструкция по установке:</b>\n"
+            "1. Скачайте приложение <b>Happ</b> по кнопкам ниже.\n"
+            "2. Скопируйте вашу персональную ссылку подписки (нажмите на неё):\n\n"
+            f"<code>{sub_link}</code>\n\n"
+            "3. Откройте приложение <b>Happ</b> -> Нажмите <b>'Добавить конфигурацию'</b> -> Выберите <b>'Импортировать из буфера обмена'</b>.\n"
+            "4. Нажмите круглую кнопку подключения в центре экрана! 🚀"
+        )
+
+        try:
+            await bot.send_message(chat_id=user_tg_id, text=instruction_text, parse_mode="HTML",
+                                            reply_markup=user_keyboard)
+        except Exception as e:
+            await callback.message.reply(f"⚠️ Ключ создан, но не удалось отправить сообщение пользователю: {e}")
+    else:
+        await status_msg.edit_text("❌ Ошибка при выполнении запроса к API XUI панели. Ключ не создан.")
+
+    await callback.answer()
+
+
+# Сценарий Оплаты. Шаг 6В: Админ нажал кнопку "Отклонить"
+@router.callback_query(F.data.startswith("adm_dec:"))
+async def admin_decline_sub(callback: CallbackQuery):
+    bot = callback.bot
+    if not callback.data or not callback.message or not isinstance(callback.message, Message) or not bot:
+        return
+    user_tg_id = int(callback.data.split(":")[1])
+
+    # Убираем кнопки у админа
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.reply("🔴 Заявка отклонена. Пользователь получит уведомление об отказе.")
+
+    decline_text = (
+        "🛑 <b>Заявка на подписку отклонена.</b>\n\n"
+        "Администратор не смог подтвердить ваш перевод. Если произошла ошибка или "
+        f"деньги точно списались, пожалуйста, свяжитесь с администратором напрямую: @{ADMIN_USERNAME}, прикрепив чек."
+    )
+
+    try:
+        await bot.send_message(chat_id=user_tg_id, text=decline_text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Не удалось отправить уведомление об отказе пользователю {user_tg_id}: {e}")
+
+    await callback.answer()
+
 
 
 @router.message(Command('users'))
 async def users(message: Message):
-    users = await get_users()
+    users_data = await get_users()
 
-    if not users:
+    if not users_data:
         await message.answer('Никто не пользуется VPN-ном!')
         return
     text = 'Пользователей в базе:\n\n'
+    users_list = list(users_data)
 
-    for idx, (u_id, username) in enumerate(users, start=1):
+    for idx, (db_id, u_id, username) in enumerate(users_list, start=1):
         name = username if username else 'Без юзернейма'
-        text += f'{idx}. {name}\n'
+        text += f'{idx}. {name} [Подписка №{db_id}]\n'
 
-    text += f'\n<b>🔥 Всего пользовтелей:</b> {len(users)}'
+    text += f'\n<b>🔥 Всего пользовтелей:</b> {len(users_list)}'
 
     await message.answer(text, parse_mode='HTML')
 
-PROMO_CODE = 'sweden'
-ADMIN_USERNAME = "iamgamzatov"
+
 
 @router.message(F.text.lower() == PROMO_CODE)
 async def handle_promo(message: Message):
-    tg_id = message.from_user.id
-    user_display_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    user = message.from_user
+    if not user:
+        return
+
+    tg_id = user.id
+    user_name = user.username or user.full_name
+
+    # 1. 🛑 НАША ЗАЩИТА: Сначала проверяем, активировал ли он УЖЕ этот промокод раньше
+    # (Тебе понадобится написать эту быструю функцию запроса в БД: SELECT used_promo FROM users WHERE tg_id = ...)
+    is_promo_used = await check_if_promo_used(tg_id)
+    if is_promo_used:
+        await message.answer("🛑 Вы уже активировали этот промокод ранее. Повторная активация невозможна!")
+        return  # Завершаем работу хендлера, хитрый юзер ничего не получит!
+
+    # 2. Если не использовал, регистрируем в боте (если его там не было)
+    await add_user(tg_id, user_name)
+    db_id = await get_user_internal_id(tg_id)
+
+    if db_id is None:
+        await message.answer("🛑 Ошибка базы данных: ID не найден. Обратитесь к админу.")
+        return
 
     wait_msg = await message.answer("⏳ Проверяю промокод и создаю твой персональный ключ...")
-    sub_link = await add_new_vpn_client(tg_id=tg_id, username=user_display_name)
+
+    # ⏱️ Передаем 1/1440 часть дня, что равняется ровно 1 минуте!
+    sub_link = await add_new_vpn_client(tg_id=tg_id, db_id=int(db_id), days=3)
+
     await wait_msg.delete()
 
     if sub_link:
-        # 🎯 Идеально адаптированная клавиатура под твой код
+        # 3. 🔥 КРИТИЧЕСКИ ВАЖНО: После успешного создания ключа, помечаем в БД, что юзер использовал промокод
+        # (Функция делает: UPDATE users SET used_promo = 1 WHERE tg_id = ...)
+        await mark_promo_as_used(tg_id)
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                # Ряд 1: Кнопки быстрой установки Happ
                 InlineKeyboardButton(text="🤖 Скачать для Android", url="https://play.google.com/store/apps/details?id=com.happproxy&hl=ru&pli=1"),
                 InlineKeyboardButton(text="🍏 Скачать для iOS", url="https://apps.apple.com/us/app/happ-proxy-utility/id6504287215?l=ru")
             ],
             [
-                # Ряд 2: Твоя родная кнопка связи с админом
-                InlineKeyboardButton(
-                    text="💳 Продлить подписку (100 руб/мес)",
-                    url=f"https://t.me/{ADMIN_USERNAME}"
-                )
+                InlineKeyboardButton(text="💳 Продлить подписку (100 руб/мес)", callback_data="buy_subscription")
             ]
         ])
 
@@ -224,53 +385,13 @@ async def handle_promo(message: Message):
             "⏳ <i>Через 3 дня триал закончится. Чтобы продлить доступ на месяц, нажмите кнопку ниже и напишите админу.</i>"
         )
 
-        # Отправляем сообщение вместе с обновленной клавиатурой
         await message.answer(instruction_text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
     else:
         await message.answer(f"🛑 Произошла ошибка при создании ключа. Пожалуйста, напишите админу: @{ADMIN_USERNAME}")
 
-# @router.message(F.photo)
-# async def get_photo_id(message: Message):
-#     await message.answer(f"ID твоей картинки: {message.photo[-1].file_id}")
-
-
-
-
-
-
-# @router.message(Command('help'))
-# async def help(message: Message):
-#     await message.answer(
-#     "Команды:\n/start - запустить бот\n/help - список команд\n/about - про нас",
-#         reply_markup=get_main_reply_keyboard())
-#
-# @router.message(Command('about'))
-# async def about(message: Message):
-#     await message.answer(f"Это команда про бота. Твое имя: {message.from_user.first_name}", reply_markup=get_main_inline_keyboard())
-
 @router.message()
 async def spam(message: Message):
-    await message.answer("Не спамь, солнышко)\nВведи команду)")
-
-
-# @router.message(F.photo)
-# async def photo(message: Message):
-#     photo_inf = message.photo[-1]
-#     file_id = photo_inf.file_id
-#
-#     await message.answer(
-#         f'Вы пирслали фото!\nID photo: <code>{file_id}</code>',
-#         parse_mode='HTML'
-#     )
-
-
-
-  # ⚠️ НАПИШИ СВОЙ НИК БЕЗ ЗНАЧКА @ (например: rasul_farkhatovich)
-
-
-
-
-
+    await message.answer("Не спамь, солнышко)\n\nЛучше введи промокод: SWEDEN)")
 
 
 
