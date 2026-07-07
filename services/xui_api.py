@@ -3,6 +3,7 @@ import os
 import uuid
 import time
 from dotenv import load_dotenv
+from database import get_user_data, save_sub_id
 
 
 load_dotenv()
@@ -48,11 +49,17 @@ async def add_new_vpn_client(tg_id: int, db_id: int, days: int = 3) -> str | Non
             if existing_client:
                 print(f"ℹ️ Клиент {client_email} существует. Переходим к продлению подписки...")
 
-                client_uuid = existing_client.get("id")
-                sub_id = existing_client.get("subId")
+                # 1. Сначала пробуем достать sub_id из нашей БД
+                user_db = await get_user_data(tg_id)
+                # Если в БД есть sub_id, берем его. Если нет — берем из панели (на случай старых клиентов)
+                sub_id = user_db['sub_id'] if user_db and user_db.get('sub_id') else existing_client.get("subId")
+
+                # 2. Если всё еще пусто или "none", генерируем новый и сразу сохраняем в БД
                 if not sub_id or sub_id == "none":
-                    # Генерируем уникальный ID, если его нет
                     sub_id = str(uuid.uuid4())[:8]
+                    await save_sub_id(tg_id, sub_id)
+
+                client_uuid = existing_client.get("id")
                 old_expiry = existing_client.get("expiryTime", 0)
 
                 # Умный расчет времени окончания
@@ -103,8 +110,18 @@ async def add_new_vpn_client(tg_id: int, db_id: int, days: int = 3) -> str | Non
             else:
                 print(f"ℹ️ Клиента {client_email} нет в панели. Создаем с нуля...")
 
+                # 1. ПЫТАЕМСЯ НАЙТИ СУЩЕСТВУЮЩИЙ SUB_ID В БД
+                user_db = await get_user_data(tg_id)
+
+                # Если в базе данных для этого юзера УЖЕ ЕСТЬ sub_id, используем его!
+                if user_db and user_db.get('sub_id') and user_db['sub_id'] != "none":
+                    sub_id = user_db['sub_id']
+                else:
+                    # Если в базе пусто, генерируем новый и сохраняем
+                    sub_id = str(uuid.uuid4()).replace("-", "")[:16]
+                    await save_sub_id(tg_id, sub_id)
+
                 client_uuid = str(uuid.uuid4())
-                sub_id = str(uuid.uuid4()).replace("-", "")[:16]
                 expiry_timestamp = int(current_time_ms + days_in_ms + buffer_hours_in_ms)
 
                 payload = {

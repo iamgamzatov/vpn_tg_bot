@@ -2,7 +2,8 @@ from os import getenv
 import asyncio
 from aiogram import Bot, Dispatcher
 from dotenv import load_dotenv
-from handlers.routes import router, init_bd
+from handlers.routes import router
+from database import init_bd
 from aiogram.types import BotCommand
 
 load_dotenv()

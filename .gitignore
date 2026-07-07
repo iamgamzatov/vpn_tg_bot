@@ -1,5 +1,6 @@
-.venv
+.venv/
 .env
-doc/prewiu.txt
 usersGamzi.db
-doc
+doc/
+__pycache__/
+.idea/
