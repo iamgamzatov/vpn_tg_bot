@@ -19,6 +19,8 @@ from aiogram.fsm.state import StatesGroup, State
 from services.xui_api import add_new_vpn_client
 from os import getenv
 from dotenv import load_dotenv
+from aiogram.types import FSInputFile
+
 load_dotenv()
 
 PROMO_CODE = 'sweden'
@@ -207,19 +209,32 @@ async def admin_approve_sub(callback: CallbackQuery):
             "1. Скачайте приложение <b>Happ</b> по кнопкам ниже.\n"
             "2. Скопируйте вашу персональную ссылку подписки (нажмите на неё):\n\n"
             f"<code>{sub_link}</code>\n\n"
-            "3. Откройте приложение <b>Happ</b> -> Нажмите <b>'Добавить конфигурацию'</b> -> Выберите <b>'Импортировать из буфера обмена'</b>.\n"
-            "4. Нажмите круглую кнопку подключения в центре экрана! 🚀"
+            
+            '❗Если вы покупали ранее - обновите подписку, как на фото выше❤'
+
         )
 
         try:
-            await bot.send_message(chat_id=user_tg_id, text=instruction_text, parse_mode="HTML",
-                                            reply_markup=user_keyboard)
+            photo = FSInputFile("handlers/instr.png")
+            await bot.send_photo(
+                chat_id=user_tg_id,
+                photo=photo,
+                caption=instruction_text,
+                parse_mode="HTML",
+                reply_markup=user_keyboard
+            )
         except Exception as e:
-            await callback.message.reply(f"⚠️ Ключ создан, но не удалось отправить сообщение пользователю: {e}")
-    else:
-        await status_msg.edit_text("❌ Ошибка при выполнении запроса к API XUI панели. Ключ не создан.")
+            print(f"Ошибка отправки сообщения: {e}")
 
-    await callback.answer()
+            # Если фото не нашлось или ошибка, отправляем просто текст
+            await bot.send_message(
+                chat_id=user_tg_id,
+                text=instruction_text,
+                parse_mode="HTML",
+                reply_markup=user_keyboard
+            )
+
+
 
 
 # Сценарий Оплаты. Шаг 6В: Админ нажал кнопку "Отклонить"
