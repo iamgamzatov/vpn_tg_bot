@@ -11,9 +11,18 @@ async def init_bd():
                 used_promo INTEGER DEFAULT 0
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                payment_id TEXT PRIMARY KEY,
+                tg_id INTEGER,
+                amount REAL,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         cursor = await db.execute('PRAGMA table_info(users)')
         columns = [column[1] for column in await cursor.fetchall()]
-
         if 'sub_id' not in columns:
             await db.execute("ALTER TABLE users ADD COLUMN sub_id TEXT")
             print("✅ База данных обновлена: добавлен столбец sub_id")
@@ -21,6 +30,34 @@ async def init_bd():
         await db.commit()
 
 # ---------------------------------------------------------
+
+async def add_pending_payment(payment_id: str, tg_id: int, amount: float):
+    """Сохраняет платеж со статусом 'pending' в момент создания ссылки"""
+    async with aiosqlite.connect(DB_GamziVPN) as db:
+        await db.execute(
+            "INSERT INTO payments (payment_id, tg_id, amount) VALUES (?, ?, ?)",
+            (payment_id, tg_id, amount)
+        )
+        await db.commit()
+
+async def check_and_clear_payment(payment_id: str) -> int | None:
+    """
+    Проверяет платеж. Если он еще не обработан, меняет статус на 'succeeded'
+    и возвращает Telegram ID пользователя.
+    """
+    async with aiosqlite.connect(DB_GamziVPN) as db:
+        async with db.execute("SELECT tg_id, status FROM payments WHERE payment_id = ?", (payment_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row and row[1] == 'pending':
+                await db.execute("UPDATE payments SET status = 'succeeded' WHERE payment_id = ?", (payment_id,))
+                await db.commit()
+                return row[0]
+            return None
+
+
+
+
+
 async def save_sub_id(tg_id, sub_id):
     async with aiosqlite.connect(DB_GamziVPN) as db:
         await db.execute("UPDATE users SET sub_id = ? WHERE tg_id = ?", (sub_id, tg_id))

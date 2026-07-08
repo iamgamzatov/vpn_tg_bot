@@ -1,6 +1,7 @@
 from database import (
     add_user, get_users, get_user_internal_id,
-    check_if_promo_used, mark_promo_as_used
+    check_if_promo_used, mark_promo_as_used,
+    add_pending_payment
 )
 
 from pathlib import Path
@@ -12,19 +13,21 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     CallbackQuery
 )
-from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 
 from services.xui_api import add_new_vpn_client
 from os import getenv
 from dotenv import load_dotenv
-from aiogram.types import FSInputFile
+from yookassa import Configuration, Payment
+import uuid
 
 load_dotenv()
 
 PROMO_CODE = 'sweden'
 ADMIN_USERNAME = "iamgamzatov"
+Configuration.account_id = getenv("YOOKASSA_SHOP_ID")
+Configuration.secret_key = getenv("YOOKASSA_SECRET_KEY")
 
 router = Router()
 
@@ -85,184 +88,46 @@ async def process_tariff(callback: CallbackQuery):
     if not user or not callback.message or not isinstance(callback.message, Message):
         return
 
-    db_id = await get_user_internal_id(user.id)
-    display_id = db_id if db_id is not None else "Не определен"
-
-    text = (
-        "💳 <b>Реквизиты для оплаты (1 месяц — 100 руб)</b>\n\n"
-        "Переведите <b>100 рублей</b> по СБП на карту:\n"
-        "🔹 <b>Банк:</b> Тбанк\n"
-        "🔹 <b>Номер:</b> <code>+79607936222</code>\n"
-        "📌 <b>Что делать после перевода:</b>\n"
-        "Сохраните чек из банковского приложения, вернитесь сюда и нажмите кнопку ниже <b>'✅ Я оплатил(а), отправить чек'</b>.\n\n"
-        f"Ваш номер подписки: <code>Подписка №{display_id}</code>"
-    )
-
-    # Кнопка, которая переведет бота в режим ожидания чека
-    keyboard_pay = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Я оплатил(а), отправить чек", callback_data="paid_send_receipt")]
-    ])
-
-    await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard_pay)
-    await callback.answer()
-
-
-# Сценарий Оплаты. Шаг 3: Включение режима ожидания чека (Вход в FSM)
-@router.callback_query(F.data == "paid_send_receipt")
-async def paid_send_receipt_handler(callback: CallbackQuery, state: FSMContext):
-    if not callback.message or not isinstance(callback.message, Message):
-        return
-    # Включаем для этого пользователя состояние ожидания чека
-    await state.set_state(OrderSubscription.wait_for_receipt)
-    await callback.message.answer(
-        "Отлично! Отправьте скриншот чека (или текстовое сообщение с деталями платежа) "
-        "<b>прямо сюда, в этот чат</b>. Бот перешлет его администратору. 📥",
-        parse_mode="HTML"
-    )
-    await callback.answer()
-
-
-# Сценарий Оплаты. Шаг 4 и 5: Прием чека, выход из FSM и отправка админу
-@router.message(OrderSubscription.wait_for_receipt)
-async def process_receipt(message: Message, state: FSMContext):
-    user = message.from_user
-    bot = message.bot
-    if not user or not bot:
-        return
-
-    db_id = await get_user_internal_id(user.id)
-
-    # Кнопки для управления заявкой (в callback_data зашиваем tg_id покупателя)
-    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Одобрить (30 дней)", callback_data=f"adm_app:{user.id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_dec:{user.id}")
-        ]
-    ])
-
-    admin_text = (
-        f"💰 <b>Поступила новая заявка на подписку!</b>\n\n"
-        f"👤 <b>Пользователь:</b> {user.full_name} (@{user.username})\n"
-        f"🆔 <b>Telegram ID:</b> {user.id}\n"
-        f"📦 <b>В базе бота:</b> Подписка №{db_id}\n\n"
-        f"👇 Чек или сообщение пользователя прикреплено ниже:"
-    )
-
+    await callback.message.edit_text("⏳ Формирую безопасную ссылку для оплаты...")
+    idempotence_key = str(uuid.uuid4())
     try:
-        # Отправляем админу текстовую карточку-уведомление
-        await bot.send_message(chat_id=ADMIN_TG_ID, text=admin_text, parse_mode="HTML")
-        # Копируем сам чек (фото/текст/документ) админу вместе с кнопками действий
-        await message.copy_to(chat_id=ADMIN_TG_ID, reply_markup=admin_keyboard)
-    except Exception as e:
-        print(f"💥 Ошибка отправки уведомления админу: {e}")
 
-    # 🚀 СБРАСЫВАЕМ СОСТОЯНИЕ (выходим из FSM), чтобы пользователь мог снова пользоваться ботом
-    await state.clear()
-    await message.answer(
-        "🎉 <b>Ваш чек успешно отправлен на проверку администратору!</b>\n\n"
-        "После подтверждения платежа бот мгновенно пришлет вам ключ доступа. "
-        "Обычно проверка занимает от 5 до 15 минут. Ожидайте! ⏳",
-        parse_mode="HTML"
-    )
+        payment = Payment.create({
+            "amount": {
+                "value": "100.00",
+                "currency": "RUB"
 
+            },  # СБП по умолчанию
+            "confirmation": {
+                "type": "redirect",
+                "return_url": f"https://t.me/GamziVPNbot"
+                # Ссылка на твоего бота, куда вернется юзер
+            },
+            "capture": True,
+            "description": "Оплата подписки Gamzi VPN — 1 месяц"
 
-@router.callback_query(F.data.startswith("adm_app:"))
-async def admin_approve_sub(callback: CallbackQuery):
-    bot = callback.bot
-    if not callback.data or not callback.message or not isinstance(callback.message, Message) or not bot:
-        return
-    # Извлекаем Telegram ID пользователя из даты кнопки
-    user_tg_id = int(callback.data.split(":")[1])
-    db_id = await get_user_internal_id(user_tg_id)
+        }, idempotence_key)
 
-    if db_id is None:
-        await callback.answer("🛑 Ошибка: Пользователь не найден в локальной БД!")
-        return
+        # Сохраняем платеж в нашу базу данных
+        await add_pending_payment(payment.id, user.id, 100.0)
 
-    # Сразу убираем inline-кнопки у админа, чтобы исключить повторные нажатия
-    await callback.message.edit_reply_markup(reply_markup=None)
-    status_msg = await callback.message.reply("⏳ Связываюсь с XUI-панелью, создаю ключ на 30 дней...")
-
-    # Обращаемся к API панели, передаем days=30
-    sub_link = await add_new_vpn_client(tg_id=user_tg_id, db_id=int(db_id), days=30)
-
-    if sub_link:
-        # Уведомляем тебя в чате
-        await status_msg.edit_text(f"🟢 Подписка №{db_id} успешно активирована на 30 дней!")
-
-        # Формируем и отправляем заветное сообщение пользователю
-        user_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🤖 Скачать для Android",
-                                     url="https://play.google.com/store/apps/details?id=com.happproxy&hl=ru&pli=1"),
-                InlineKeyboardButton(text="🍏 Скачать для iOS",
-                                     url="https://apps.apple.com/us/app/happ-proxy-utility/id6504287215?l=ru")
-            ],
-            [
-                InlineKeyboardButton(text="Продлить ещё❤", callback_data="buy_subscription")
-            ]
-        ])
-
-        instruction_text = (
-            "🥳 <b>Ура! Ваша оплата подтверждена! Подписка на 1 месяц успешно активирована!</b> 🎉\n\n"
-            "ℹ️ <b>Инструкция по установке:</b>\n"
-            "1. Скачайте приложение <b>Happ</b> по кнопкам ниже.\n"
-            "2. Скопируйте вашу персональную ссылку подписки (нажмите на неё):\n\n"
-            f"<code>{sub_link}</code>\n\n"
-            
-            '❗Если вы покупали ранее - обновите подписку, как на фото выше❤'
-
+        text = (
+            "💳 <b>Оплата подписки (1 месяц — 100 руб)</b>\n\n"
+            "Для оплаты нажмите кнопку ниже. Вы сможете безопасно оплатить через <b>СБП</b> или любой <b>банковской картой</b>.\n\n"
+            "🔄 После успешной оплаты бот автоматически в течение нескольких секунд выдаст вам ключ доступа!"
         )
 
-        try:
-            photo = FSInputFile("handlers/instr.png")
-            await bot.send_photo(
-                chat_id=user_tg_id,
-                photo=photo,
-                caption=instruction_text,
-                parse_mode="HTML",
-                reply_markup=user_keyboard
-            )
-        except Exception as e:
-            print(f"Ошибка отправки сообщения: {e}")
+        keyboard_pay = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Перейти к оплате", url=payment.confirmation.confirmation_url)]
+        ])
 
-            # Если фото не нашлось или ошибка, отправляем просто текст
-            await bot.send_message(
-                chat_id=user_tg_id,
-                text=instruction_text,
-                parse_mode="HTML",
-                reply_markup=user_keyboard
-            )
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard_pay)
 
-
-
-
-# Сценарий Оплаты. Шаг 6В: Админ нажал кнопку "Отклонить"
-@router.callback_query(F.data.startswith("adm_dec:"))
-async def admin_decline_sub(callback: CallbackQuery):
-    bot = callback.bot
-    if not callback.data or not callback.message or not isinstance(callback.message, Message) or not bot:
-        return
-    user_tg_id = int(callback.data.split(":")[1])
-
-    # Убираем кнопки у админа
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.reply("🔴 Заявка отклонена. Пользователь получит уведомление об отказе.")
-
-    decline_text = (
-        "🛑 <b>Заявка на подписку отклонена.</b>\n\n"
-        "Администратор не смог подтвердить ваш перевод. Если произошла ошибка или "
-        f"деньги точно списались, пожалуйста, свяжитесь с администратором напрямую: @{ADMIN_USERNAME}, прикрепив чек."
-    )
-
-    try:
-        await bot.send_message(chat_id=user_tg_id, text=decline_text, parse_mode="HTML")
     except Exception as e:
-        print(f"Не удалось отправить уведомление об отказе пользователю {user_tg_id}: {e}")
+        print(f"Ошибка создания платежа ЮKassa: {e}")
+        await callback.message.answer(f"🛑 Произошла ошибка. Попробуйте позже или напишите @{ADMIN_USERNAME}")
 
     await callback.answer()
-
-
 
 @router.message(Command('users'))
 async def users(message: Message):
@@ -345,6 +210,17 @@ async def handle_promo(message: Message):
         await message.answer(instruction_text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
     else:
         await message.answer(f"🛑 Произошла ошибка при создании ключа. Пожалуйста, напишите админу: @{ADMIN_USERNAME}")
+
+
+@router.message(F.photo)
+async def catch_photo_id(message: Message):
+    # Берем самый последний элемент [-1], так как Telegram присылает массив
+    # из разных размеров одной фотки, а последний — самый качественный.
+    photo_id = message.photo[-1].file_id
+    print(f"\n🚀 ТВОЙ PHOTO_ID ДЛЯ КОДА:\n{photo_id}\n")
+    await message.answer("Айдишник пойман! Посмотри в консоль PyCharm.")
+
+
 
 @router.message()
 async def spam(message: Message):
